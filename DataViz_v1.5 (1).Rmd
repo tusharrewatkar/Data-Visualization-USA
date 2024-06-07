@@ -1,0 +1,800 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+# INSTALLING REQUIRED PACKAGES
+
+install.packages("leaflet")
+install.packages("tidyverse")
+install.packages("ggmap")
+install.packages("leaflet.extras")
+install.packages("htmltools")
+install.packages("ggplot2")
+install.packages("mapsproj")
+install.packages("maps")
+install.packages("dplyr")
+install.packages("mapsdata")
+install.packages("gganimate")
+install.packages("transformer")
+install.packages("hrbrthemes")
+install.packages("ggpubr")
+
+```
+
+
+```{r}
+# LOADING THE LIBRARIES
+
+library(leaflet)
+library(tidyverse)
+library(ggmap)
+library(leaflet.extras)
+library(htmltools)
+library(ggplot2)
+library(maps)
+library(dplyr)
+library(transformer)
+library(gganimate)
+library(corrplot)
+library(hrbrthemes)
+library(ggpubr)
+
+```
+
+
+```{r}
+# IMPORTING THE MALARIA DATASET 
+
+# df_malaria <- read.csv("C:\\Users\\tusha\\OneDrive\\Desktop\\DV dataset\\US.61462000_malaria.csv", header = TRUE)
+df_malaria <- read.csv("G:\\data visualization\\US.61462000_malaria.csv", header = TRUE)
+
+
+```
+
+```{r}
+
+headers <- colnames(df_malaria)
+headers
+
+```
+
+```{r}
+# SELECTING THE REQUIRED COLUMNS
+# COLUMN DESCRIPTION: ConditionName: Disease (Malaria), Admin1Name: States in US, PeriodStartDate and PeriodEndDate: start and end dates per record, CountValue: Number of cases
+
+df_malaria <- df_malaria[, c("ConditionName", "Admin1Name", "Admin1ISO", "PeriodStartDate", "PeriodEndDate", "CountValue")]
+df_malaria
+
+```
+
+```{r}
+
+df_malaria$Admin1ISO <- gsub("US-","",as.character(df_malaria$Admin1ISO))
+
+```
+
+```{r}
+# FILTERING YEARS: 2000 to 2017
+
+df_malaria$PeriodStartDate <- as.Date(df_malaria$PeriodStartDate)
+df_malaria$PeriodEndDate <- as.Date(df_malaria$PeriodEndDate)
+
+df_malaria <- subset(df_malaria, PeriodStartDate >= as.Date("2000-01-01")) %>% drop_na()
+
+```
+
+
+```{r}
+# ------------------------------- MALARIA YEARLY PREPROCESSING ---------------------------------
+
+# EXTRACTING: start months, end months, start years, end years
+
+df_malaria$start_month <- format(df_malaria$PeriodStartDate, "%m")
+df_malaria$end_month <- format(df_malaria$PeriodEndDate, "%m")
+df_malaria$start_year <- format(df_malaria$PeriodStartDate, "%Y")
+df_malaria$end_year <- format(df_malaria$PeriodEndDate, "%Y")
+
+```
+
+
+```{r}
+# MONTHS
+
+end_months <- c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12")
+
+```
+
+
+```{r}
+# CREATING 12 DATAFRAMES: result01 to result12 for each end month data.
+# Data is filtered based on start month as January, and end month between January to December for each year. (Cumulative records per year)
+
+for (month in end_months) {
+ 
+  fltr <- df_malaria[df_malaria$start_month == "01" & df_malaria$end_month == month & df_malaria$start_year == df_malaria$end_year, ]
+  sorted <- fltr[order(fltr$Admin1Name, fltr$start_year, fltr$PeriodStartDate), ]
+  
+  max_end_dates <- aggregate(PeriodEndDate ~ Admin1Name + PeriodStartDate, sorted, FUN = max)
+  min_start_dates <- aggregate(PeriodStartDate ~ Admin1Name + end_year, sorted, FUN = min)
+
+  res <- merge(sorted, max_end_dates, by = c("Admin1Name", "PeriodStartDate", "PeriodEndDate"))
+  result <- merge(res, min_start_dates, by = c("Admin1Name", "end_year"))
+  
+  result <- result[!duplicated(result[c("Admin1Name", "end_year", "start_month")]), ]
+  
+  # During merge, PeriodStartDate.x and PeriodStartDate.y were created with same data in both, so removing PeriodStartDate.y and   renaming PeriodStartDate.x to PeriodStartDate 
+  
+  colnames(result)[colnames(result) == "PeriodStartDate.x"] <- "PeriodStartDate"
+  result$PeriodStartDate.y <- NULL
+  
+  assign(paste0("result", month), result)
+}
+
+```
+
+
+```{r}
+# January to December data per year per state
+
+malaria_yearly_cases <- result12
+
+```
+
+```{r}
+
+malaria_yearly_cases
+
+# ------------------------------------------------------------------------------------------------
+
+```
+
+
+```{r}
+# ------------------------------- MALARIA MONTHLY PREPROCESSING ---------------------------------
+
+malaria_monthly_cases_cum <- data.frame(start_year = character(), end_month = character(), Admin1Name = character(), CountValue = numeric(), stringsAsFactors = FALSE)
+
+for (month in end_months) {
+  result_df <- get(paste0("result", month))
+  extr <- result_df[, c("start_year", "end_month", "Admin1Name", "CountValue")]
+  malaria_monthly_cases_cum <- rbind(malaria_monthly_cases_cum, extr)
+}
+
+```
+
+
+```{r}
+
+malaria_monthly_cases_cum <- malaria_monthly_cases_cum[order(malaria_monthly_cases_cum$start_year, malaria_monthly_cases_cum$Admin1Name, malaria_monthly_cases_cum$end_month), ]
+malaria_monthly_cases_cum <- data.frame(malaria_monthly_cases_cum, row.names = NULL)
+
+```
+
+```{r}
+
+malaria_monthly_cases_cum
+
+```
+
+
+```{r}
+# Converting the cumulative malaria case counts from 'malaria_monthly_cases_cum' to case counts per month.
+
+malaria_monthly_cases <- malaria_monthly_cases_cum[order(malaria_monthly_cases_cum$start_year, malaria_monthly_cases_cum$Admin1Name, malaria_monthly_cases_cum$end_month), ]
+
+prev_count <- NULL
+prev_state <- NULL
+prev_year <- NULL
+month_count <- c()
+
+for (i in 1:nrow(malaria_monthly_cases)) {
+  if (is.null(prev_year) || is.null(prev_state) || malaria_monthly_cases$start_year[i] != prev_year || malaria_monthly_cases$Admin1Name[i] != prev_state) {
+    prev_count <- malaria_monthly_cases$CountValue[i]
+    month_count <- c(month_count, malaria_monthly_cases$CountValue[i])
+  } else {
+    curr_count <- malaria_monthly_cases$CountValue[i]
+    month_diff <- max(0, curr_count - prev_count)
+    prev_count <- curr_count
+    month_count <- c(month_count, month_diff)
+  }
+  
+  prev_year <- malaria_monthly_cases$start_year[i]
+  prev_state <- malaria_monthly_cases$Admin1Name[i]
+}
+
+malaria_monthly_cases$month_count <- month_count
+malaria_monthly_cases
+
+```
+
+```{r}
+
+malaria_monthly_cases_old <- malaria_monthly_cases
+malaria_yearly_cases_old <- malaria_yearly_cases
+
+```
+
+
+```{r}
+
+malaria_yearly_cases <- subset(malaria_yearly_cases, PeriodStartDate >= as.Date("2012-01-01")) %>% drop_na()
+
+```
+
+
+```{r}
+
+```
+
+
+```{r}
+# BAR PLOT: Yearly Trend of Malaria Cases (2000 - 2017)
+
+
+monthly_sum <- aggregate(CountValue ~ start_year, data = malaria_yearly_cases_old, FUN = sum)
+monthly_sum_fltr <- monthly_sum[monthly_sum$CountValue > 50, ]
+
+ggplot(monthly_sum_fltr, aes(x = as.character(start_year), y = CountValue, fill = as.character(start_year))) +
+  geom_bar(stat = "identity") +
+  labs(x = "Year", y = "Number of Malaria Cases") +
+  ggtitle("Yearly Trend of Malaria Cases (2000 - 2017)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_discrete(name = "Year") + theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) 
+
+```
+
+
+```{r}
+# BOX PLOT: Distribution of Cases per Year (2000 - 2017)
+
+malaria_yearly_cases_old$start_year <- as.factor(malaria_yearly_cases_old$start_year)
+
+box_plot <- ggplot(malaria_yearly_cases_old, aes(x = start_year, y = CountValue, fill = start_year)) +
+  geom_boxplot() + labs(x = "Year", y = "Malaria Cases") +
+  ggtitle("Distribution of Cases per Year (2000 - 2017)")  + scale_fill_discrete(name = "Year") +     
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) 
+
+
+print(box_plot)
+```
+
+
+```{r}
+# BAR PLOT: Yearly trend of cases from 2012 to 2017
+
+malaria_yearly_cases <- malaria_yearly_cases %>%  mutate(Year = year(PeriodStartDate))
+
+monthly_sum <- aggregate(CountValue ~ Year, data = malaria_yearly_cases, FUN = sum)
+monthly_sum <- monthly_sum[monthly_sum$CountValue > 50, ]
+
+ggplot(monthly_sum, aes(x = as.character(Year), y = CountValue, fill = as.character(Year))) +
+  geom_bar(stat = "identity") +
+  labs(x = "Year", y = "Number of Malaria Cases") +
+  ggtitle("Yearly Trend of Malaria Cases (2012 - 2017)") +
+  theme(axis.text.x = element_text( hjust = 1)) +   scale_fill_discrete(name = "Year") +   theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) 
+
+
+
+```
+
+
+```{r}
+# Total count of malaria cases per state from 2012 to 2017
+
+usa <- malaria_yearly_cases %>% 
+  group_by(Admin1Name) %>%
+  summarise(count = sum(CountValue)) %>%
+  arrange(desc(count))
+
+```
+
+
+```{r}
+# Map data for States
+
+s <- map_data('state')
+s
+
+```
+
+```{r}
+# As the 'region' in US state map are in lower cases, the 'Admin1Name' is converted to lower case
+
+usa$Admin1Name <- tolower(as.character(usa$Admin1Name))
+
+```
+
+```{r}
+usa
+
+```
+
+
+```{r}
+
+malaria_map <- merge(s, usa, by.x = 'region', by.y = 'Admin1Name')
+
+```
+
+```{r}
+# GEOGRAPHICAL MAP: Distribution of malaria cases per state in USA
+
+ggplot(malaria_map, aes(x = long, y = lat, group = group, fill = count)) + geom_polygon(color = 'gray') + scale_fill_gradient2(low = 'white', high='red')+ theme_void()+ ggtitle('Distribution of cases per State in USA') + coord_map('polyconic') +   theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+```
+
+```{r}
+# PIE CHART: TOP 8 STATES VS OTHER STATES (2012 - 2017)
+
+top8 <- head(usa, 8)
+
+oth_states <- data.frame(Admin1Name = "Other States", count = sum(usa$count) - sum(top8$count))
+all_states <- rbind(top8, oth_states)
+
+ggplot(all_states, aes(x = "", y = count, fill = Admin1Name)) +
+  geom_bar(stat = "identity", color = "lightgray") +
+  coord_polar("y", start = 0) +
+  labs(title = "Top 8 States VS Other States") +
+  scale_fill_discrete(name = "State") +
+theme_minimal() +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), axis.text.x = element_blank(),
+    axis.text.y = element_blank(), axis.title.x = element_blank(), axis.title.y = element_blank(), panel.grid = element_blank())
+
+```
+
+
+
+```{r}
+# TOP 3 STATES - YEARLY ANALYSIS
+
+mary_df <- subset(malaria_yearly_cases, Admin1Name == "MARYLAND")
+cali_df <- subset(malaria_yearly_cases, Admin1Name == "CALIFORNIA")
+texas_df <- subset(malaria_yearly_cases, Admin1Name == "TEXAS")
+
+```
+
+
+```{r}
+
+mary_df <- mary_df %>% select(Year, Admin1Name, start_year, end_year, CountValue)
+texas_df <- texas_df %>% select(Year, Admin1Name, start_year, end_year, CountValue)
+cali_df <- cali_df %>% select(Year, Admin1Name, start_year, end_year, CountValue)
+
+```
+
+
+```{r}
+# LINE PLOT: MALARIA CASES IN THE TOP 3 STATES (2012 to 2017)
+
+top3_states <- rbind(mary_df, cali_df, texas_df)
+top3_states$end_year <- as.numeric(top3_states$end_year)
+
+lbl <- c("2012", "2013", "2014", "2015", "2016", "2017")
+
+ggplot(top3_states, aes(x = end_year, y = CountValue, color = Admin1Name)) +
+  geom_line() +
+  labs(x = "Year", y = "Number of Malaria Cases", title = "Malaria Cases in the Top 3 States (2012 - 2017)") +
+  scale_color_manual(values = c("red", "blue", "darkgreen"), name = "States") +
+  scale_x_continuous(breaks = c(2012, 2013, 2014, 2015, 2016, 2017), labels = lbl) +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) 
+
+
+```
+
+```{r}
+# ADDING x-axis label names
+
+malaria_monthly_cases$end_month_name <- factor(malaria_monthly_cases$end_month, levels = c("01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"), labels = c("Jan", "Feb", "March", "April", "May", "June", "July", "August", "Sept", "Oct", "Nov", "Dec"))
+```
+
+```{r}
+malaria_monthly_cases
+```
+
+
+
+```{r}
+#### --- BAR PLOT OF CASES PER MONTH (2012 to 2017)
+
+fltr_mnth <- subset(malaria_monthly_cases, start_year > 2012)
+bar_plot <- ggplot(fltr_mnth, aes(x = end_month_name, y = month_count, fill = end_month)) +
+  geom_col() +
+  labs(x = "Month", y = "Malaria Cases") +
+  ggtitle("Bar Plot of Cases per Month (2012 - 2017)") +
+  scale_fill_discrete(name = "Month") + theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+# Display the bar plot
+print(bar_plot)
+```
+
+
+```{r}
+# VIOLIN PLOT: Malaria cases month wise distribution (2012 - 2017)
+
+fltr_mnth <- subset(malaria_monthly_cases, start_year > 2012)
+
+violin_plot <- ggplot(fltr_mnth, aes(x = end_month_name, y = month_count, fill = end_month)) +
+  geom_violin() +
+  labs(x = "Month", y = "Malaria Cases") +
+  ggtitle("Distribution of Cases per Month (2012 - 2017)") +
+    theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
+   scale_fill_discrete(name = "Month") 
+
+# Display the violin plot
+print(violin_plot)
+
+```
+
+
+
+```{r}
+# TOP 3 STATES MONTHLY ANALYSIS
+
+maryland_state_df <- malaria_monthly_cases[malaria_monthly_cases$Admin1Name == "MARYLAND" & malaria_monthly_cases$start_year >= "2012", ]
+cali_state_df <- malaria_monthly_cases[malaria_monthly_cases$Admin1Name == "CALIFORNIA" & malaria_monthly_cases$start_year >= "2012",]
+texas_state_df <- malaria_monthly_cases[malaria_monthly_cases$Admin1Name == "TEXAS" & malaria_monthly_cases$start_year >= "2012", ]
+
+```
+
+
+```{r}
+# DONUT PLOT: MONTHLY MALARIA CASES DISTRIBUTION (State: Maryland, Year: 2017)
+
+mary_2017 <- subset(maryland_state_df, start_year == "2017")
+
+mary_2017$fract <- mary_2017$month_count / sum(mary_2017$month_count) # fraction = monthly count / total yearly count
+mary_2017$y_max <- cumsum(mary_2017$fract)
+mary_2017$y_min <- c(0, head(mary_2017$y_max, n = -1))
+mary_2017$lbl_pos <- (mary_2017$y_max + mary_2017$y_min) / 2
+mary_2017$lbl <- paste0(mary_2017$month_count)
+
+
+donut_plot <- ggplot(mary_2017, aes(ymax = y_max, ymin = y_min, xmax = 4, xmin = 3, fill = end_month)) +
+  geom_rect() +
+  geom_text(x = 3.5, aes(y = lbl_pos, label = lbl), size = 3.6) + 
+  scale_fill_brewer(palette = "Set3", name="Month") +
+  coord_polar(theta = "y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "left", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
+  ggtitle("Monthly Cases in Maryland - Year 2017") 
+
+print(donut_plot)
+
+```
+
+
+
+
+
+```{r}
+#--------------------- Enviromental factors of each state (2012 to 2017) --------------------- 
+
+####  1. PRECIPITATION
+
+```
+
+
+```{r}
+# envt_2012_2017.csv: Contains the yearly rain value, drought index and temperature value for California, Maryland, Texas and Virginia (2012 - 2017)
+
+# df_Envt <- read.csv("E:\\Downloads\\envt_2012_2017.csv", header = TRUE, sep=';')
+df_Envt <- read.csv("C:\\Users\\simpc\\Downloads\\envt_2012_2017.csv", header = TRUE, sep=';')
+
+df_Envt
+```
+
+
+```{r}
+# The rain value, drought index and temperature value for all years (2012 to 2017) from the state California
+
+df_Envt$Year <- substr(df_Envt$Date, 1, 4)
+df_Envt$Year <- as.integer(df_Envt$Year)
+
+df_Envt_State <- df_Envt %>%
+  filter(State == "California")
+
+head(df_Envt_State)
+
+```
+
+
+```{r}
+
+df_Envt <- df_Envt %>% select(-Date)
+head(df_Envt)
+
+```
+
+
+```{r}
+
+cali_df$Year <- as.numeric(as.character(cali_df$Year))
+df_Envt_State$Year <- as.numeric(as.character(df_Envt_State$Year))
+
+cali_env_df <- merge(cali_df, df_Envt_State, by = "Year")
+cali_env_df <- cali_env_df %>% select(Year, Rain_Value, Dought_Index, Temp_Value, CountValue, State)
+
+correlation <- cor(cali_env_df[c("CountValue", "Rain_Value", "Dought_Index", "Temp_Value")])
+print(correlation)
+
+```
+
+
+```{r}
+# CORRELATION HEATMAP 
+
+corrplot(correlation, method = "color",
+         tl.col = "black", tl.srt = 0,
+         addCoef.col = "black",
+         title = "Correlation with Environmental factor (Annually)",
+         tl.cex = 0.6, mar = c(0, 2, 3.5, 8), tl.offset = 1.5)
+
+
+```
+
+
+```{r}
+
+# df_Population <- read.csv("C:\\Users\\tusha\\OneDrive\\Desktop\\DV dataset\\Source\\Dataset\\PopulationUS.csv", header = TRUE)
+df_Population <- read.csv("C:\\Users\\simpc\\Desktop\\Computer vision\\data visualization\\imp\\tutu\\PopulationUS.csv", header = TRUE)
+
+df_Population
+
+```
+
+
+```{r}
+
+# US_Pop <- read.csv(file ='C:\\Users\\tusha\\OneDrive\\Desktop\\DV dataset\\Source\\Dataset\\PopulationUS.csv', fileEncoding="UTF-8-BOM", na.strings = '..')
+
+ US_Pop <- read.csv("C:\\Users\\simpc\\Desktop\\Computer vision\\data visualization\\imp\\tutu\\PopulationUS.csv", fileEncoding="UTF-8-BOM", na.strings = '..')
+colnames(US_Pop) <- gsub("X", "", colnames(US_Pop))
+
+US_Pop <- US_Pop[c(1,4,5,6,7,8,9,10,11)]
+US_Pop <- setNames(cbind(US_Pop[1], stack(US_Pop[2:9])), c("US_State", "Population", "Year"))
+US_Pop$US_State <- toupper(US_Pop$US_State)
+head(US_Pop)
+
+```
+
+
+```{r}
+US_Pop$Year <- as.numeric(as.character(US_Pop$Year))
+US_Pop$Population <- as.integer(gsub(",", "", US_Pop$Population))
+
+california_pop <- US_Pop %>% filter(US_State == "CALIFORNIA" & Year >= 2012 & Year <= 2017)
+california_pop
+
+```
+
+```{r}
+state_pop_avg <- US_Pop %>% group_by(US_State) %>% summarise(avg_population = mean(Population))
+print(state_pop_avg)
+
+```
+
+
+```{r}
+# Using the "usa" dataframe created above that had the count of cases per state in descending order from 2012 to 2017
+
+df_values <- usa
+df_values
+
+```
+
+
+```{r}
+# converting the states to lower case and join population and malaria cases data
+
+state_pop_avg <- state_pop_avg %>% mutate(US_State = tolower(US_State))
+df_values <- df_values %>% mutate(Admin1Name = tolower(Admin1Name))
+
+state_population_with_countValue <- state_pop_avg %>% left_join(df_values, by = c("US_State" = "Admin1Name"))
+print(state_population_with_countValue)
+
+```
+
+
+```{r}
+
+correlation <- cor(state_population_with_countValue[c("avg_population", "count")])
+print(correlation)
+
+```
+
+
+```{r}
+# CORRELATION PLOT
+
+corrplot(correlation, method = "color",
+         tl.col = "black", tl.srt = 0,
+         addCoef.col = "black",
+         title = "Correlation with Population (Annually)",
+         tl.cex = 0.7, mar = c(0, 2, 3.5, 8), tl.offset = 1.5)  # Adjust the value of tl.offset as per your preference
+
+
+```
+
+
+```{r}
+# ADDING LONGITUDE AND LATITUDE TO POPULATION DATASET USING STATE MAP DATA
+
+s <- map_data('state')
+
+state_population_with_countValue$lat <- NA
+state_population_with_countValue$long <- NA
+
+for (i in 1:nrow(state_population_with_countValue)) {
+  state_name <- state_population_with_countValue$US_State[i] 
+  state_row <- s[s$region == state_name, ]
+  
+  if (nrow(state_row) > 0) {
+    state_population_with_countValue$lat[i] <- state_row$lat
+    state_population_with_countValue$long[i] <- state_row$long
+  }
+}
+state_population_with_countValue <- state_population_with_countValue%>% drop_na()
+print(state_population_with_countValue)
+
+```
+
+
+```{r}
+# BUBBLE MAP: State-wise average population distribution
+  
+us_map <- ggplot() +
+  geom_polygon(data = s, aes(x = long, y = lat, group = group), fill = "white", color = "black") +
+  coord_map()
+
+bubble_map <- us_map +
+  geom_point(data = state_population_with_countValue, aes(x = long, y = lat, size = `avg_population`, color = `avg_population`), alpha = 0.7) +
+  scale_size(range = c(2, 10)) +
+  scale_color_gradient(low = "blue", high = "red") + theme_void() +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) + ggtitle("State-wise Average Population Distribution")
+
+print(bubble_map)
+
+
+```
+
+
+
+```{r}
+# FILTERING: state as California, year between 2012 to 2017
+
+california_pop_filtered <- US_Pop %>%
+  filter(US_State == "CALIFORNIA" & Year >= 2012 & Year <= 2017)
+california_pop_filtered
+
+```
+
+
+```{r}
+# AVERAGE POPULATION VS COUNT OF MALARIA CASES (2012 - 2017)
+
+ggscatter(state_population_with_countValue, x = "avg_population", y = "count", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson", title = "Average Population VS Count of Malaria Cases (2012 - 2017)",
+          xlab = "Average Population", ylab = "Count of Malaria Cases") + 
+          theme_bw() + theme(plot.title = element_text(size = 14, face = "bold")) 
+
+```
+
+
+```{r}
+malaria_monthly_cases$start_year <- as.integer(malaria_monthly_cases$start_year)
+
+```
+
+```{r}
+
+maryland_data <- malaria_monthly_cases %>% filter(start_year >= 2012 & end_month <= 2017 & tolower(Admin1Name) == "maryland")
+maryland_data
+
+```
+
+
+```{r}
+# Monthly Temperature value from 2012-2017
+
+# df_maryland_month <- read.csv("E:\\Downloads\\Data_Temp_Maryland.csv", header = TRUE,sep=';')
+df_maryland_month <- read.csv("C:\\Users\\simpc\\Downloads\\Data_Temp_Maryland.csv", header = TRUE,sep=';')
+df_maryland_month
+
+```
+
+
+```{r}
+
+df_maryland_month$Date <- as.character(df_maryland_month$Date)
+
+df_maryland_month$Year <- substr(df_maryland_month$Date, 1, 4)
+df_maryland_month$Month <- substr(df_maryland_month$Date, 5, 6)
+
+df_maryland_month$Year <- as.numeric(df_maryland_month$Year)
+df_maryland_month$Month <- as.numeric(df_maryland_month$Month)
+df_maryland_month
+
+```
+
+
+```{r}
+
+maryland_data$start_year <- as.numeric(maryland_data$start_year)
+maryland_data$end_month <- as.numeric(maryland_data$end_month)
+
+df_maryland_month$Year <- as.numeric(df_maryland_month$Year)
+df_maryland_month$Month <- as.numeric(df_maryland_month$Month)
+
+joined_df <- maryland_data %>%
+  left_join(df_maryland_month, by = c("start_year" = "Year", "end_month" = "Month"))
+joined_df
+
+```
+
+
+```{r}
+#Removing 2013 data as it contains negligible values
+
+joined_df <- joined_df %>% 
+  filter(start_year != 2013)
+print(joined_df)
+
+```
+
+
+```{r}
+# Calculating Temperature avg value and Count for each month from year 2012-2017 
+
+avg_data <- joined_df %>% group_by(end_month) %>% summarise(avg_Value = mean(Value, na.rm = TRUE),
+            avg_month_count = mean(month_count, na.rm = FALSE))
+print(avg_data)
+
+```
+
+
+```{r}
+# CONNECTED SCATTER PLOT: representing the average monthly count of cases in Maryland from 2012 to 2017
+
+avg_data <- avg_data %>%
+  arrange(end_month)
+
+
+ggplot(avg_data, aes(x=end_month, y=avg_month_count)) +
+  geom_line(color="grey") + geom_point(shape=21, color="black", fill="#69b3a2", size=6) +
+  scale_x_continuous(breaks = seq(min(avg_data$end_month), max(avg_data$end_month), 1), labels =  as.character(seq(min(avg_data$end_month), max(avg_data$end_month), 1))) +
+  xlab("Month") +  
+  ylab("Average Month Count") + 
+  ggtitle("Average Monthly cases in MaryLand (2012 - 2017)") +
+  theme(legend.position = "right", plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+
+```
+
+
+```{r}
+
+correlation <- cor(avg_data[c("avg_month_count", "avg_Value")])
+print(correlation)
+
+```
+
+
+```{r}
+
+corrplot(correlation, method = "color",
+         tl.col = "black", tl.srt = 0,
+         addCoef.col = "black",
+         title = expression(atop("Correlation of Monthly Cases with Monthly Average Temperature", "(2012 - 2017)")),
+         tl.cex = 0.7, mar = c(0, 2, 3.5, 8), tl.offset = 1.5)
+
+```
+
+
+
